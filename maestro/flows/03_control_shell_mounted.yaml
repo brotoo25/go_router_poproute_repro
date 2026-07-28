@@ -1,0 +1,26 @@
+# Control: the identical back press, once the shell has mounted its Navigator.
+#
+# This is what isolates the cause. Same route, same button, same key event, but
+# the shell is ready, so popRoute finds a real NavigatorState, returns false,
+# and the system back proceeds normally.
+appId: dev.broto.go_router_poproute_repro
+name: Back button after the shell has mounted
+tags:
+  - control
+---
+- launchApp:
+    clearState: true
+- tapOn: "Sign in"
+- assertVisible: "Restoring session"
+
+# Wait out the session restore.
+- extendedWaitUntil:
+    visible: "Dashboard"
+    timeout: 15000
+
+- pressKey: Back
+
+# popRoute found a real NavigatorState this time: nothing to pop inside the
+# shell, so the root navigator pops back to the sign in screen. No crash.
+- assertVisible: "Sign in"
+- assertNotVisible: "CRASH CAPTURED"

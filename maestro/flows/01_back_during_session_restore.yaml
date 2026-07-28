@@ -1,0 +1,41 @@
+# Scenario 1: a plain sign in, then the real hardware back button.
+#
+# Nothing here is synthetic. Maestro taps the button a user would tap and
+# presses the device's own back key (KEYCODE_BACK), which the engine turns
+# into the `flutter/navigation` popRoute call that reaches
+# GoRouterDelegate.popRoute.
+appId: dev.broto.go_router_poproute_repro
+name: Back button during session restore
+tags:
+  - crash
+---
+- launchApp:
+    clearState: true
+- assertVisible: "Sign in"
+- tapOn: "Sign in"
+
+# go_router's configuration already ends in the ShellRouteMatch, but the shell
+# is still restoring the session, so it has not put go_router's Navigator in
+# the tree. shellNavigatorKey.currentState is null for these 5 seconds.
+- assertVisible: "Restoring session"
+
+- pressKey: Back
+
+# The symptom. popRoute threw inside delegate.dart:126, handlePopRoute
+# swallowed it and fell through to SystemNavigator.pop(), so the back button
+# closed the app instead of returning to the sign in screen.
+# Flow 03 runs this same key press against a mounted shell and gets the
+# correct behaviour.
+- assertNotVisible: "Restoring session"
+- assertNotVisible: "Sign in"
+
+# The reporter wrote the exception to disk before the activity died, so
+# reopening the app reports what closed it. clearState is deliberately absent
+# here: that file is the evidence.
+- launchApp
+- extendedWaitUntil:
+    visible: "PREVIOUS RUN CRASHED"
+    timeout: 20000
+- assertVisible: "Null check operator used on a null value"
+- assertVisible: "GoRouterDelegate._findCurrentNavigators"
+- assertVisible: "package:go_router/src/delegate.dart:126:43"

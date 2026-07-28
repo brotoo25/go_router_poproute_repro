@@ -1,0 +1,37 @@
+# Scenario 2: the sequence from the production breadcrumbs.
+#
+# paused -> navigation -> resumed -> back press -> crash.
+#
+# A notification handler navigates to a shell route while the app is in the
+# background. A backgrounded app produces no frames, so the shell cannot mount
+# its Navigator until the app comes back to the foreground, and the first back
+# press after resume lands inside the window.
+appId: dev.broto.go_router_poproute_repro
+name: Notification navigates while the app is backgrounded
+tags:
+  - crash
+---
+- launchApp:
+    clearState: true
+- tapOn: "Notification opens /dashboard in background"
+- assertVisible: "Armed. Background the app, reopen it, and press the back button."
+
+# Real home button. The app pauses and its notification handler navigates.
+- pressKey: Home
+
+# Reopen it from where it was, rather than restarting it.
+- launchApp:
+    stopApp: false
+
+- assertVisible: "Restoring session"
+- pressKey: Back
+
+# Closed by SystemNavigator.pop() after popRoute threw.
+- assertNotVisible: "Restoring session"
+
+- launchApp
+- extendedWaitUntil:
+    visible: "PREVIOUS RUN CRASHED"
+    timeout: 20000
+- assertVisible: "Null check operator used on a null value"
+- assertVisible: "GoRouterDelegate._findCurrentNavigators"
