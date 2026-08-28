@@ -7,8 +7,9 @@ import 'screens/tab_screens.dart';
 
 /// The key whose `currentState` is force-unwrapped by
 /// `GoRouterDelegate._findCurrentNavigators` (delegate.dart:126).
-final GlobalKey<NavigatorState> shellNavigatorKey =
-    GlobalKey<NavigatorState>(debugLabel: 'shell');
+final GlobalKey<NavigatorState> shellNavigatorKey = GlobalKey<NavigatorState>(
+  debugLabel: 'shell',
+);
 
 final GoRouter router = GoRouter(
   initialLocation: '/',

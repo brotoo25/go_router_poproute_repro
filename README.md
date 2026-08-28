@@ -63,12 +63,30 @@ cluster on slow devices and after resume.
 
 ### Two things worth knowing when reproducing it
 
-**The back press only reaches Dart if something is poppable.** Flutter tells
-the platform whether it will handle back via
-`SystemNavigator.setFrameworkHandlesBack`. With a single root page, Android
-consumes the back press itself and go_router never sees it. So this app uses
-`push('/dashboard')`, not `go`, leaving the sign in screen underneath. Any real
-app that is more than one screen deep satisfies this.
+**Whether the back press reaches Dart at all depends on the back path.**
+There are two on Android:
+
+- *Predictive back* (`OnBackInvokedCallback`, API 33+, and on by default for
+  apps targeting SDK 36 on Android 16). The engine only registers the
+  callback while the framework says it can handle a pop
+  (`SystemNavigator.setFrameworkHandlesBack`, driven by `NavigationNotification`).
+  With a single root page Android consumes the press itself and go_router
+  never sees it. That is the path the device below is on, so this app uses
+  `push('/dashboard')`, not `go`, leaving the sign in screen underneath.
+- *Legacy back* (`Activity.onBackPressed`, every Android below 13, and any app
+  that has not opted into predictive back). `FlutterActivity.onBackPressed`
+  forwards to `NavigationChannel.popRoute()` **unconditionally**; nothing
+  consults `frameworkHandlesBack`. Every back press runs
+  `GoRouterDelegate.popRoute`, including on a root route where nothing can
+  pop, so `go('/dashboard')` reproduces this just as well as `push`.
+
+The second path is why the production data attached to the PR shows the crash
+on `/`, `/login` and `/home` with `StatefulShellRoute.indexedStack` (a
+`ShellRouteMatch` all the same, so the same force-unwrap): older devices and
+non-opted-in apps forward *every* back press, and the only thing standing
+between the user and a closed app is whether the shell's `Navigator` happens
+to be in the tree at that moment. `canPop()` is safe in that state; `popRoute`
+is not.
 
 **The user-visible symptom is the app closing.**
 `WidgetsBinding.handlePopRoute` catches whatever `didPopRoute` throws, reports
@@ -88,6 +106,40 @@ So the exception never reaches the user as a crash dialog. The back button
 just quits the app. The activity dies with it, which is why this app writes
 the captured error to disk and shows it on the next launch, the same way a
 crash reporter does.
+
+## What the right behaviour is
+
+The review asks two things: whether the transient state is real, and whether
+popping the parent navigator is the right response to it, or whether the
+configuration should simply never be allowed into that state.
+
+**The configuration cannot be kept out of that state by go_router.**
+`currentConfiguration` is updated synchronously by `go()`/`push()` and is the
+source of truth that the next build reads. The `Navigator` behind a
+`ShellRouteMatch` only exists once the shell's `builder` has put `child` into
+the tree, and that builder is application code. A loading gate like the one in
+`AppShell` is not a misuse of the API: `ShellRoute.builder` receives `child`
+and is free to render something else first. Even a shell that always returns
+`child` immediately still has the one-frame gap of the original report, and
+has it for as long as the app is paused (scenario 2). Refusing to enter the
+state would mean refusing to navigate.
+
+**Stopping at the unmounted shell is the same answer `canPop()` already
+gives, and the same answer the mounted shell gives.** With the fix,
+`_findCurrentNavigators` returns the navigators that are actually in the tree.
+In this app that is the root navigator, so back pops it and lands on the sign
+in screen, which is exactly what flow `03` observes once the shell *has*
+mounted: the shell's own navigator has one page and cannot pop, so the pop
+falls through to the root either way. An unmounted shell navigator has nothing
+that could be popped, so skipping it changes nothing about *what* is popped,
+only whether the app survives the press. Where the root cannot pop either,
+`popRoute` returns `false`, `handlePopRoute` calls `SystemNavigator.pop()`, and
+the app is backgrounded, which is what the user asked for.
+
+The alternative, treating the state as unpoppable (return `true` and do
+nothing), is worse: on a root route the press is reported as handled, so the
+app neither pops nor backgrounds, and back appears dead until a second press.
+The workaround note on the PR describes hitting exactly that trap.
 
 ## Running it
 

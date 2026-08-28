@@ -35,12 +35,8 @@ class ReproApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(colorSchemeSeed: Colors.indigo),
       routerConfig: router,
-      builder: (BuildContext context, Widget? child) => Stack(
-        children: <Widget>[
-          ?child,
-          const CrashOverlay(),
-        ],
-      ),
+      builder: (BuildContext context, Widget? child) =>
+          Stack(children: <Widget>[?child, const CrashOverlay()]),
     );
   }
 }

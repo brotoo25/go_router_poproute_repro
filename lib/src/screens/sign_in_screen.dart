@@ -32,11 +32,12 @@ class _SignInScreenState extends State<SignInScreen> {
   void _signIn() {
     CrashReporter.clear();
     Session.instance.reset();
-    // push, not go: the sign in screen stays underneath. That matters, because
-    // Flutter only forwards the back button to Dart when something in the tree
-    // reports that it can handle a pop (SystemNavigator.setFrameworkHandlesBack).
-    // With a single root page Android would consume the back press itself and
-    // go_router would never see it. See README.md.
+    // push, not go: the sign in screen stays underneath. That matters on the
+    // predictive back path (API 33+, default for targetSdk 36), where the
+    // engine only forwards back to Dart while something in the tree reports it
+    // can handle a pop (SystemNavigator.setFrameworkHandlesBack). On the
+    // legacy onBackPressed path every press reaches popRoute, root route or
+    // not, and go() reproduces it just as well. See README.md.
     router.push('/dashboard');
     setState(() => _hint = '');
   }
@@ -114,7 +115,9 @@ class _SignInScreenState extends State<SignInScreen> {
               onChanged: (bool value) =>
                   setState(() => Session.instance.slowShell = value),
               title: const Text('Shell restores session first'),
-              subtitle: const Text('Keeps the shell navigator unmounted for 5s'),
+              subtitle: const Text(
+                'Keeps the shell navigator unmounted for 5s',
+              ),
             ),
             const SizedBox(height: 8),
             OutlinedButton(

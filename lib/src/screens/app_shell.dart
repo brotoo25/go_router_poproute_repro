@@ -44,9 +44,8 @@ class _AppShellState extends State<AppShell> {
           body: widget.child,
           bottomNavigationBar: NavigationBar(
             selectedIndex: _indexFor(context),
-            onDestinationSelected: (int index) => context.go(
-              index == 0 ? '/dashboard' : '/settings',
-            ),
+            onDestinationSelected: (int index) =>
+                context.go(index == 0 ? '/dashboard' : '/settings'),
             destinations: const <Widget>[
               NavigationDestination(
                 icon: Icon(Icons.dashboard_outlined),

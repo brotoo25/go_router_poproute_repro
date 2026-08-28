@@ -5,9 +5,7 @@ class DashboardScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
-      child: Text('Dashboard', key: Key('dashboard')),
-    );
+    return const Center(child: Text('Dashboard', key: Key('dashboard')));
   }
 }
 
@@ -16,8 +14,6 @@ class SettingsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
-      child: Text('Settings', key: Key('settings')),
-    );
+    return const Center(child: Text('Settings', key: Key('settings')));
   }
 }

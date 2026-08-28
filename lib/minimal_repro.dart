@@ -32,9 +32,10 @@ final GoRouter router = GoRouter(
       builder: (_, _) => Scaffold(
         body: Center(
           child: FilledButton(
-            // push, not go: the engine only forwards the back button to Dart
-            // when something is poppable. With a single root page Android
-            // consumes the press itself and go_router never sees it.
+            // push, not go: with predictive back (API 33+, default for
+            // targetSdk 36) the engine only forwards the back button to Dart
+            // when something is poppable. On the legacy onBackPressed path
+            // every press reaches popRoute and go() crashes just the same.
             onPressed: () => router.push('/dashboard'),
             child: const Text('Sign in'),
           ),
@@ -92,8 +93,10 @@ class _AppShellState extends State<AppShell> {
       final RouteMatchBase last =
           router.routerDelegate.currentConfiguration.matches.last;
       debugPrint('matches.last                   : ${last.runtimeType}');
-      debugPrint('shellNavigatorKey.currentState : '
-          '${shellNavigatorKey.currentState}');
+      debugPrint(
+        'shellNavigatorKey.currentState : '
+        '${shellNavigatorKey.currentState}',
+      );
     });
   }
 
