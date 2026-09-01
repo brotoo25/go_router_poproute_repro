@@ -1,283 +1,126 @@
 # go_router popRoute crash reproduction
 
-Reproduces [flutter/flutter#188993](https://github.com/flutter/flutter/issues/188993):
+Reproduces [flutter/flutter#188993](https://github.com/flutter/flutter/issues/188993),
+fixed by [flutter/packages#12111](https://github.com/flutter/packages/pull/12111).
 
 ```
-TypeError: Null check operator used on a null value
-  GoRouterDelegate._findCurrentNavigators (package:go_router/src/delegate.dart:126)
-  GoRouterDelegate.popRoute (package:go_router/src/delegate.dart:58)
+Null check operator used on a null value
+#0 GoRouterDelegate._findCurrentNavigators (package:go_router/src/delegate.dart:126:43)
+#1 GoRouterDelegate.popRoute (package:go_router/src/delegate.dart:58:45)
 ```
 
-Fix proposed in [flutter/packages#12111](https://github.com/flutter/packages/pull/12111).
+## The transient state
 
-This is a small but realistic app (sign in, a shell with a bottom bar), driven
-by **real user interactions**: Maestro taps the buttons and presses the
-device's own back key, and the crash it produces is the one in the issue.
-
-## The defect
-
-`GoRouterDelegate._findCurrentNavigators` walks the shell matches of the
-current configuration and force-unwraps each one's navigator:
+`popRoute` walks the shell matches in `currentConfiguration` and force-unwraps
+each shell's navigator:
 
 ```dart
 RouteMatchBase walker = currentConfiguration.matches.last;
 while (walker is ShellRouteMatch) {
-  final NavigatorState potentialCandidate = walker.navigatorKey.currentState!; // delegate.dart:126
+  final NavigatorState potentialCandidate = walker.navigatorKey.currentState!;
 ```
 
-`canPop()` twenty lines above uses `?.` for the same lookup. `popRoute` does
-not, so **any** moment in which the configuration already contains a
-`ShellRouteMatch` whose `Navigator` is not in the tree turns a back press into
-a `TypeError`.
+`currentConfiguration` is updated inside `push()` and `go()`. The `Navigator`
+behind a `ShellRouteMatch` only exists once the shell's `builder` has put
+`child` in the tree, which happens on a later frame at the earliest. Any back
+press in between throws:
 
-### That window is not always one frame
+- in the frame between the navigation and the next build, the window the
+  issue describes;
+- for as long as the app is paused, when something navigates in the
+  background, since a paused app builds no frames. This is the pause, resume,
+  back sequence in the issue's production breadcrumbs, and is not driven by
+  this app;
+- for as long as the shell renders something other than `child`. This app's
+  `AppShell` shows "Restoring session" for 5 seconds before it renders the
+  `Navigator`, the ordinary shape of a shell that refreshes a token or opens a
+  database first. That window is wide enough to hit by hand.
 
-The issue describes the frame-sized race: `go()`/`push()` update
-`currentConfiguration` synchronously, but the shell's `Navigator` only mounts
-when the next frame builds.
+`canPop()`, in the same file, does the same lookup with `?.` and is fine.
 
-It is much wider than that whenever a shell renders something other than the
-`child` go_router handed it, which is an ordinary thing for a shell to do:
+The user never sees the exception. `WidgetsBinding.handlePopRoute` catches
+what `didPopRoute` throws, reports it, and falls through to
+`SystemNavigator.pop()`, so the back button closes the app.
 
-```dart
-ShellRoute(
-  navigatorKey: shellNavigatorKey,
-  builder: (_, _, Widget child) => AppShell(child: child),
-  ...
-)
-
-// AppShell.build
-if (!Session.instance.isReady) {
-  return const _RestoringSessionScreen(); // `child` is NOT in the tree
-}
-return Scaffold(body: widget.child, bottomNavigationBar: ...);
-```
-
-Restoring a session, opening a database, fetching remote config, waiting on a
-connectivity check: for as long as the shell shows a loading screen,
-`currentConfiguration.matches.last` is the `ShellRouteMatch` and
-`shellNavigatorKey.currentState` is `null`. Every back press in that period
-crashes. That is what makes this reproducible with a real finger on a real
-back button instead of a 16ms race, and it is why the production reports
-cluster on slow devices and after resume.
-
-### Two things worth knowing when reproducing it
-
-**Whether the back press reaches Dart at all depends on the back path.**
-There are two on Android:
-
-- *Predictive back* (`OnBackInvokedCallback`, API 33+, and on by default for
-  apps targeting SDK 36 on Android 16). The engine only registers the
-  callback while the framework says it can handle a pop
-  (`SystemNavigator.setFrameworkHandlesBack`, driven by `NavigationNotification`).
-  With a single root page Android consumes the press itself and go_router
-  never sees it. That is the path the device below is on, so this app uses
-  `push('/dashboard')`, not `go`, leaving the sign in screen underneath.
-- *Legacy back* (`Activity.onBackPressed`, every Android below 13, and any app
-  that has not opted into predictive back). `FlutterActivity.onBackPressed`
-  forwards to `NavigationChannel.popRoute()` **unconditionally**; nothing
-  consults `frameworkHandlesBack`. Every back press runs
-  `GoRouterDelegate.popRoute`, including on a root route where nothing can
-  pop, so `go('/dashboard')` reproduces this just as well as `push`.
-
-The second path is why the production data attached to the PR shows the crash
-on `/`, `/login` and `/home` with `StatefulShellRoute.indexedStack` (a
-`ShellRouteMatch` all the same, so the same force-unwrap): older devices and
-non-opted-in apps forward *every* back press, and the only thing standing
-between the user and a closed app is whether the shell's `Navigator` happens
-to be in the tree at that moment. `canPop()` is safe in that state; `popRoute`
-is not.
-
-**The user-visible symptom is the app closing.**
-`WidgetsBinding.handlePopRoute` catches whatever `didPopRoute` throws, reports
-it, and then carries on to the fallback:
-
-```dart
-try {
-  if (await observer.didPopRoute()) return true;
-} catch (exception, stack) {
-  FlutterError.reportError(...);   // swallowed
-}
-...
-SystemNavigator.pop();             // app closes
-```
-
-So the exception never reaches the user as a crash dialog. The back button
-just quits the app. The activity dies with it, which is why this app writes
-the captured error to disk and shows it on the next launch, the same way a
-crash reporter does.
-
-## What the right behaviour is
-
-The review asks two things: whether the transient state is real, and whether
-popping the parent navigator is the right response to it, or whether the
-configuration should simply never be allowed into that state.
-
-**The configuration cannot be kept out of that state by go_router.**
-`currentConfiguration` is updated synchronously by `go()`/`push()` and is the
-source of truth that the next build reads. The `Navigator` behind a
-`ShellRouteMatch` only exists once the shell's `builder` has put `child` into
-the tree, and that builder is application code. A loading gate like the one in
-`AppShell` is not a misuse of the API: `ShellRoute.builder` receives `child`
-and is free to render something else first. Even a shell that always returns
-`child` immediately still has the one-frame gap of the original report, and
-has it for as long as the app is paused (scenario 2). Refusing to enter the
-state would mean refusing to navigate.
-
-**Stopping at the unmounted shell is the same answer `canPop()` already
-gives, and the same answer the mounted shell gives.** With the fix,
-`_findCurrentNavigators` returns the navigators that are actually in the tree.
-In this app that is the root navigator, so back pops it and lands on the sign
-in screen, which is exactly what flow `03` observes once the shell *has*
-mounted: the shell's own navigator has one page and cannot pop, so the pop
-falls through to the root either way. An unmounted shell navigator has nothing
-that could be popped, so skipping it changes nothing about *what* is popped,
-only whether the app survives the press. Where the root cannot pop either,
-`popRoute` returns `false`, `handlePopRoute` calls `SystemNavigator.pop()`, and
-the app is backgrounded, which is what the user asked for.
-
-The alternative, treating the state as unpoppable (return `true` and do
-nothing), is worse: on a root route the press is reported as handled, so the
-app neither pops nor backgrounds, and back appears dead until a second press.
-The workaround note on the PR describes hitting exactly that trap.
-
-## Running it
-
-Two drivers, both against the same app and both verified green. An Android
-device or emulator is required for the real back key.
-
-### Maestro (real taps, real hardware back button)
+## Run it
 
 ```
-flutter build apk --debug
-adb install -r build/app/outputs/flutter-apk/app-debug.apk
-maestro test maestro/flows/
+flutter test
 ```
 
-```
-[Passed] Notification navigates while the app is backgrounded (13s)
-[Passed] Back button during session restore (11s)
-[Passed] One frame race between push() and the shell Navigator (8s)
-[Passed] Back button after the shell has mounted (11s)
+No device needed. The first two tests sign in with a tap, check that
+`currentConfiguration.matches.last` is the `ShellRouteMatch` while
+`shellNavigatorKey.currentState` is null, and press back. The third waits for
+the shell to mount before pressing back.
 
-4/4 Flows Passed in 43s
-```
+The tests assert the correct behaviour, so which ones pass depends on the
+go_router version in `pubspec.yaml`:
 
-Nothing in `01` and `02` is synthetic: Maestro taps what a user taps and sends
-`KEYCODE_BACK`. `03` is the control, and is the reason the others are
-convincing: the same key press, after the shell has mounted, correctly returns
-to the sign in screen and reports no crash.
+| test | go_router 17.3.0 | flutter/packages#12111 |
+|---|---|---|
+| back while the shell shows its loading screen | fails, stack above | passes |
+| back in the frame between push() and the shell being built | fails, stack above | passes |
+| back once the shell has mounted | passes | passes |
 
-`flutter test integration_test/...` overwrites the installed APK with one whose
-entry point is the test file, so rebuild and reinstall before running the flows
-again if you have run the integration tests in between.
-
-### integration_test (real gestures, deterministic)
-
-```
-flutter test integration_test/poproute_crash_test.dart -d <device>
-```
-
-Taps drive every navigation. The back press is the exact `flutter/navigation`
-`popRoute` message the engine sends, pushed through `channelBuffers`, so
-`handlePopRoute` -> `RootBackButtonDispatcher` -> `GoRouterDelegate.popRoute`
-runs unchanged. `SystemNavigator.pop` is intercepted so the test can assert on
-it instead of being killed by it.
-
-Two tests: the crash during session restore, and the same back press after the
-shell has mounted, which must not crash. Scenario 2 is not here on purpose. Its
-premise is that a paused app produces no frames, and a live test binding keeps
-driving frames and reasserting `resumed`, so simulating it would prove nothing.
-The Maestro flow runs it for real instead.
-
-### Why there is no Patrol (or any in-Dart) test of the native back key
-
-Worth knowing before you try: **no in-process Dart test can assert on what
-happens after a real back press that lands in the crash window.** A real back
-press finishes the activity, because Android's predictive back commits the
-gesture, `_handleCommitBackGesture` throws, and the activity goes away. That
-takes the Dart isolate running the test with it, so the run stops at the key
-press with no assertion executed and no failure reported.
-
-Mocking `SystemNavigator.pop`, which is what lets the integration_test above
-assert on the fallthrough, does not help: here it is Android that finishes the
-activity, not Dart.
-
-That is why Maestro is the driver that proves the real key event. It asserts
-from outside the process, so it survives the app being closed, and the closing
-is itself one of the things it asserts.
-
-## The three scenarios in the app
-
-1. **Sign in** — `push`es onto the shell route while it restores the session.
-   Back during the 5 second loading screen crashes. Realistic and wide enough
-   to hit by hand.
-2. **Notification opens /dashboard in background** — arms a handler that
-   navigates the moment the app is paused. A backgrounded app produces no
-   frames, so the shell cannot mount its `Navigator` until the app is resumed,
-   and the first back press after resume lands in the window. This is the
-   sequence in the production breadcrumbs: paused, navigate, resumed, back,
-   crash.
-3. **Synthetic one-frame race** — turns the session gate off and pushes the
-   engine's own `popRoute` message inside the single frame between `push()` and
-   the shell mounting. Only the timing is scripted; the ordering is the
-   framework's. This is the minimal form of the bug from the issue.
-
-The switch on the home screen toggles the session gate for scenarios 1 and 2.
-
-## Observed output (go_router 17.3.0, Flutter 3.44.6, Android 16)
-
-Real hardware back button, during the session restore:
-
-```
-══╡ EXCEPTION CAUGHT BY WIDGETS LIBRARY ╞═══════════════════════════════════
-The following _TypeError was thrown while dispatching notifications for
-WidgetsBindingObserver.didPopRoute:
-Null check operator used on a null value
-
-When the exception was thrown, this was the stack:
-#0      GoRouterDelegate._findCurrentNavigators (package:go_router/src/delegate.dart:126:43)
-#1      GoRouterDelegate.popRoute (package:go_router/src/delegate.dart:58:45)
-#2      _RouterState._handleBackButtonDispatcherNotification (package:flutter/src/widgets/router.dart:807:34)
-#3      _CallbackHookProvider.invokeCallback (package:flutter/src/widgets/router.dart:934:31)
-#4      BackButtonDispatcher.invokeCallback (package:flutter/src/widgets/router.dart:1017:18)
-#5      RootBackButtonDispatcher.didPopRoute (package:flutter/src/widgets/router.dart:1112:33)
-#6      WidgetsBinding.handlePopRoute (package:flutter/src/widgets/binding.dart:1116:28)
-<asynchronous suspension>
-#7      WidgetsBinding._handleCommitBackGesture (package:flutter/src/widgets/binding.dart:1203:7)
-<asynchronous suspension>
-#8      MethodChannel._handleAsMethodCall (package:flutter/src/services/platform_channel.dart:607:42)
-<asynchronous suspension>
-#9      _DefaultBinaryMessenger.setMessageHandler.<anonymous closure> (package:flutter/src/services/binding.dart:663:22)
-<asynchronous suspension>
-```
-
-`#7` is Android's predictive back; on the synthetic path frame `#7` is
-`MethodChannel._handleAsMethodCall` directly, which is the stack quoted in the
-issue. Frames `#0` to `#6` are identical either way, including line numbers.
-
-## Verifying the fix
-
-Uncomment the `dependency_overrides` block in `pubspec.yaml` (it points at the
-branch from flutter/packages#12111), then:
+To switch between the two, uncomment the `dependency_overrides` block in
+`pubspec.yaml` to use the fix, or comment it out again to go back to 17.3.0,
+then run:
 
 ```
 flutter pub get
-flutter build apk --debug && adb install -r build/app/outputs/flutter-apk/app-debug.apk
-maestro test maestro/flows/03_control_shell_mounted.yaml
+flutter test
 ```
 
-With the fix, `popRoute()` returns false instead of throwing, the system back
-proceeds, and the app is backgrounded rather than crashed. Flows `01`, `02` and
-`04` assert the crash and are expected to fail against the fixed version; `03`
-is expected to pass against both.
+On 17.3.0 the run ends with:
 
-## Notes
+```
+00:00 +0 -1: back while the shell shows its loading screen [E]
+00:00 +0 -2: back in the frame between push() and the shell being built [E]
+00:00 +1 -2: Some tests failed.
+```
 
-- The crash reporter (`lib/src/crash_reporter.dart`) and the banner exist only
-  so a black box driver can see which exception closed the app. They are not
-  part of the reproduction.
-- If `maestro test` fails with `io.grpc.StatusRuntimeException: UNAVAILABLE`,
-  its on-device driver is not running. `maestro test` normally installs it; if
-  a stale entry in `~/.maestro/sessions` makes it skip that step, clear the
-  file and retry.
+With the fix:
+
+```
+00:00 +3: All tests passed!
+```
+
+```
+flutter run -d <android device>
+```
+
+Tap "Sign in", then press the back button while "Restoring session" is on
+screen. The app closes and the stack is in the console.
+
+The app uses `push` rather than `go` so the sign in screen stays underneath.
+With predictive back, on by default for apps targeting Android 16, the engine
+only forwards the back button to Dart while the framework reports it can pop.
+On the legacy `onBackPressed` path, which is where the production reports come
+from, every press reaches `popRoute`, so `go` crashes as well, root route or
+not.
+
+## What the right behaviour is
+
+The review asks whether popping the parent navigator is right, or whether the
+configuration should never be allowed into this state.
+
+go_router cannot keep it out. `currentConfiguration` is the input to the next
+build; the shell's `Navigator` is an output of it, and whether the build
+produces one is decided by the shell's `builder`, which is application code.
+Even a builder that always returns `child` has the one-frame gap, and has it
+for the whole time the app is paused. Refusing the state means refusing to
+navigate.
+
+The fix stops walking at the first unmounted shell, which is what `canPop()`
+already does. An unmounted navigator has nothing to pop, so skipping it does
+not change what gets popped. The third test is the control: with the shell
+mounted, its navigator holds a single page, the pop bubbles to the root, and
+the app is back on the sign in screen. With the fix, the first test ends in
+the same place. In the second test the tree has not been rebuilt at all yet,
+so the root navigator still holds only the sign in page and the press is
+handled as it would have been one frame earlier: nothing to pop, `popRoute`
+returns `false`, and the platform backgrounds the app.
+
+Reporting the press as handled instead (`return true`) would be worse: on a
+root route the app would neither pop nor background, and back would look
+dead.

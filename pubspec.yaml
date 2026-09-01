@@ -1,5 +1,5 @@
 name: go_router_poproute_repro
-description: "Minimal reproduction for https://github.com/flutter/flutter/issues/188993"
+description: "Reproduction for https://github.com/flutter/flutter/issues/188993"
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -9,9 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # Pinned to the exact version the crash is reported against.
   go_router: 17.3.0
-  path_provider: ^2.1.6
 
 # Uncomment to run against the fix from flutter/packages#12111.
 # dependency_overrides:
@@ -23,8 +21,6 @@ dependencies:
 
 dev_dependencies:
   flutter_test:
-    sdk: flutter
-  integration_test:
     sdk: flutter
   flutter_lints: ^6.0.0
 
